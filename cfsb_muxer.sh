@@ -8,10 +8,6 @@ readonly TAG="CFSB"
 THUMB_TS="${THUMB_TS:-00:03:00}"
 readonly THUMB_TS
 
-# ─── Globais de canal de retorno ──────────────────────────────────────────────
-_MKV_JSON=""
-_SPINNER_OUT=""
-
 # ─── Cores & Estilos ──────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
     C_RESET='\033[0m'
@@ -36,7 +32,7 @@ die() {
 
 info()    { echo -e "${C_CYAN}  ℹ  ${C_RESET}${C_BOLD}$*${C_RESET}"; }
 success() { echo -e "${C_GREEN}  ✔  ${C_RESET}${C_BOLD}$*${C_RESET}"; }
-warn()    { echo -e "${C_YELLOW}  ⚠  ${C_RESET}$*"; }
+warn()    { echo -e "${C_YELLOW}  ⚠  ${C_RESET}$*" >&2; } # Melhoria 3: Enviado para stderr
 step()    { echo -e "${C_MAGENTA}  ▶  ${C_RESET}${C_BOLD}$*${C_RESET}"; }
 detail()  { echo -e "${C_DIM}       $*${C_RESET}"; }
 
@@ -83,9 +79,9 @@ spinner() {
 
     tput cnorm 2>/dev/null || true
 
-    # Restaura traps do pai
-    eval "$old_int"
-    eval "$old_term"
+    # Melhoria 1: Restaura traps de forma robusta com fallback seguro
+    [[ -n "$old_int" ]]  && eval "$old_int"  || trap - INT
+    [[ -n "$old_term" ]] && eval "$old_term" || trap - TERM
 
     echo -ne "\r"
 
@@ -98,7 +94,7 @@ spinner() {
         exit "$exit_code"
     fi
 
-    _SPINNER_OUT=$(cat "$tmp_out")
+    # Melhoria 2: Remoção do _SPINNER_OUT global que não era consumido
     rm -f "$tmp_out" "$tmp_err"
 }
 
@@ -128,8 +124,8 @@ parse_video_codec() {
         | grep -i '^V_' | head -n 1 || true)
 
     if   [[ "$codec_id" == *"HEVC"* || "$codec_id" == *"H265"* ]]; then echo "HEVC"
-    elif [[ "$codec_id" == *"AVC"*  || "$codec_id" == *"H264"* ]]; then echo "AVC"
-    elif [[ "$codec_id" == *"AV1"*  ]];                             then echo "AV1"
+    elif [[ "$codec_id" == *"AVC"* || "$codec_id" == *"H264"* ]]; then echo "AVC"
+    elif [[ "$codec_id" == *"AV1"* ]];                             then echo "AV1"
     else
         warn "Codec de vídeo não reconhecido (${codec_id:-vazio}), assumindo HEVC"
         echo "HEVC"
@@ -141,7 +137,7 @@ parse_audio_codec() {
     codec_id=$(grep -oP '"codec_id":\s*"\K[^"]+' <<< "$_MKV_JSON" \
         | grep -i '^A_' | head -n 1 || true)
 
-    if   [[ "$codec_id" == *"AAC"*  ]]; then echo "AAC"
+    if   [[ "$codec_id" == *"AAC"* ]]; then echo "AAC"
     elif [[ "$codec_id" == *"FLAC"* ]]; then echo "FLAC"
     elif [[ "$codec_id" == *"OPUS"* ]]; then echo "Opus"
     else
@@ -169,7 +165,8 @@ calc_crc32() {
     local hash
 
     if command -v crc32 &>/dev/null; then
-        hash=$(crc32 "$file")
+        # Melhoria 4: Extrai apenas o valor hexadecimal de 8 caracteres (portabilidade)
+        hash=$(crc32 "$file" | grep -oP '[0-9a-fA-F]{8}')
     else
         hash=$(cfv -g "$file" | tail -n 1 | awk '{print $NF}')
     fi
@@ -179,18 +176,28 @@ calc_crc32() {
 
 # ─── Coleta de entrada do usuário ─────────────────────────────────────────────
 prompt_user() {
+    # Melhoria 6: Uso de nameref para evitar globais implícitas e isolar o escopo
+    declare -n ref_anime="$1"
+    declare -n ref_ep="$2"
+    declare -n ref_src="$3"
+
     echo
     echo -e "${C_BOLD}  📝  Informações do episódio${C_RESET}"
     sep
-    echo -ne "  ${C_CYAN}🎬${C_RESET} Nome do Anime      : "; read -r ANIME
-    echo -ne "  ${C_CYAN}📺${C_RESET} Número do Episódio : "; read -r EPISODIO
-    echo -ne "  ${C_CYAN}💿${C_RESET} Source             : "; read -r SOURCE
+    echo -ne "  ${C_CYAN}🎬${C_RESET} Nome do Anime      : "; read -r ref_anime
+    echo -ne "  ${C_CYAN}📺${C_RESET} Número do Episódio : "; read -r ref_ep
+    echo -ne "  ${C_CYAN}💿${C_RESET} Source             : "; read -r ref_src
     sep
     echo
 
-    [[ -n "$ANIME" ]]    || die "Nome do anime não pode ser vazio."
-    [[ -n "$EPISODIO" ]] || die "Número do episódio não pode ser vazio."
-    [[ -n "$SOURCE" ]]   || die "Source não pode ser vazio."
+    [[ -n "$ref_anime" ]] || die "Nome do anime não pode ser vazio."
+    [[ -n "$ref_ep" ]]    || die "Número do episódio não pode ser vazio."
+    [[ -n "$ref_src" ]]   || die "Source não pode ser vazio."
+
+    # Melhoria 7: Validação do formato padrão de numeração do episódio
+    if [[ ! "$ref_ep" =~ ^[0-9]{2,4}(v[0-9])?$ ]]; then
+        warn "Episódio '$ref_ep' fora do padrão numérico esperado (ex: 01, 002, 03v2)."
+    fi
 }
 
 # ─── Principal ────────────────────────────────────────────────────────────────
@@ -201,6 +208,9 @@ main() {
 
     local pasta="$1"
     [[ -d "$pasta" ]] || die "Pasta não encontrada: $pasta"
+
+    # Melhoria 6: Inicialização explícita das variáveis locais da main
+    local ANIME="" EPISODIO="" SOURCE=""
 
     step "Verificando dependências..."
     check_deps
@@ -227,7 +237,8 @@ main() {
     detail "💬  $(basename "$legenda")"
     detail "📖  $(basename "$capitulos")"
 
-    prompt_user
+    # Passa as referências das variáveis locais para o prompt
+    prompt_user ANIME EPISODIO SOURCE
 
     local tempo_inicial=$SECONDS
 
@@ -285,9 +296,10 @@ main() {
 
     # ── Thumbnail ──
     thumb="${pasta}/${nome_base}[${hash}].webp"
+    # Melhoria 5: -ss reposicionado após -i e ajuste no filtro de amostragem para evitar telas pretas
     spinner "Gerando thumbnail (ts=${THUMB_TS})..." \
-        ffmpeg -loglevel error -ss "$THUMB_TS" -i "$mkv_final" \
-            -vf "thumbnail,setsar=1" -vframes 1 "$thumb" -y
+        ffmpeg -loglevel error -i "$mkv_final" -ss "$THUMB_TS" \
+            -vf "thumbnail=n=50,setsar=1" -vframes 1 "$thumb" -y
 
     # ── Resumo final ──
     local duracao
