@@ -48,7 +48,7 @@ sep() {
 header() {
   echo
   echo -e "${C_BLUE}${C_BOLD} ╔══════════════════════════════════════════════╗${C_RESET}"
-  echo -e "${C_BLUE}${C_BOLD} ║ 🎌 Crystal FanSub MKV Muxer ║${C_RESET}"
+  echo -e "${C_BLUE}${C_BOLD} ║ 🎌 Crystal FanSub MKV Muxer                  ║${C_RESET}"
   echo -e "${C_BLUE}${C_BOLD} ╚══════════════════════════════════════════════╝${C_RESET}"
   echo
 }
@@ -103,8 +103,8 @@ check_deps() {
     command -v "$cmd" &>/dev/null || missing+=("$cmd")
   done
 
-  if ! command -v crc32 &>/dev/null && ! command -v perl &>/dev/null; then
-    missing+=("crc32 ou perl")
+  if ! command -v crc32 &>/dev/null && (! command -v perl &>/dev/null || ! perl -e 'use Digest::CRC32;') ; then
+    missing+=("crc32 ou perl com Digest::CRC32")
   fi
 
   (( ${#missing[@]} == 0 )) || die "Dependências faltando: ${missing[*]}"
@@ -120,8 +120,8 @@ detect_codecs_and_resolution() {
   json_out=$(mkvmerge -J "$file")
 
   local video_info audio_info
-  video_info=$(echo "$identify_out" | grep -i "video" || true)
-  audio_info=$(echo "$identify_out" | grep -i "audio" | head -n 1 || true)
+  video_info=$(echo "$identify_out" | jq -r '.tracks[] | select(.type=="video") | .codec' 2>/dev/null || true)
+  audio_info=$(echo "$identify_out" | jq -r '.tracks[] | select(.type=="audio") | .codec' 2>/dev/null || true)
 
   if [[ "$video_info" == *"HEVC"* || "$video_info" == *"H.265"* ]]; then _DETECT_VIDEO="HEVC"
   elif [[ "$video_info" == *"AVC"* || "$video_info" == *"H.264"* ]]; then _DETECT_VIDEO="AVC"
@@ -162,14 +162,12 @@ calc_crc32() {
     hash=$(crc32 "$file")
   else
     hash=$(perl -e '
+      use Digest::CRC32;
       open(F, "<", $ARGV[0]) or die;
       binmode F; local $/; my $data = <F>;
-      my $crc = 0xFFFFFFFF;
-      for my $byte (unpack("C*", $data)) {
-        $crc ^= $byte;
-        for (1..8) { $crc = ($crc & 1) ? (($crc >> 1) ^ 0xEDB88320) : ($crc >> 1); }
-      }
-      printf "%08X\n", $crc ^ 0xFFFFFFFF;
+      my $crc = new Digest::CRC32();
+      $crc->add($data);
+      printf "%08X\n", $crc->hexdigest();
     ' "$file")
   fi
 
@@ -191,8 +189,13 @@ prompt_user() {
   echo
 
   [[ -n "$ANIME" ]]   || die "Nome do anime não pode ser vazio."
-  [[ "$EPISODE" =~ ^[0-9]{1,4}[a-zA-Z]?$ ]] || die "Número do episódio inválido: $EPISODE"
+  if ! [[ "$EPISODE" =~ ^[0-9]+$ ]]; then die "Número do episódio inválido: $EPISODE"; fi
   [[ -n "$SOURCE" ]]  || die "Source não pode ser vazio."
+
+  echo -ne " ${C_CYAN}📸${C_RESET} Tempo para gerar thumbnail (segundos) [30] : "; read -r THUMBNAIL_TIME
+  THUMBNAIL_TIME=${THUMBNAIL_TIME:-30}
+
+  if ! [[ "$THUMBNAIL_TIME" =~ ^[0-9]+$ ]]; then die "Tempo inválido para gerar thumbnail: $THUMBNAIL_TIME"; fi
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -216,7 +219,8 @@ main() {
 
   mapfile -d '' -t mkv_files < <(find "$dir" -maxdepth 1 -type f -name "*.mkv" -print0 | sort -z)
 
-  (( ${#mkv_files[@]} == 1 )) || die "Esperado 1 arquivo .mkv, encontrado ${#mkv_files[@]} em: $dir"
+  if (( ${#mkv_files[@]} == 0 )); then die "Nenhum arquivo .mkv encontrado em: $dir"; fi
+  if (( ${#mkv_files[@]} > 1 )); then die "Mais de um arquivo .mkv encontrado em: $dir"; fi
 
   source_mkv="${mkv_files[0]}"
   subtitle=$(find "$dir" -maxdepth 1 -type f -name "*.ass" -print0 | sort -z | tr '\0' '\n' | head -n 1)
@@ -226,7 +230,7 @@ main() {
   [[ -n "$chapters" ]]  || die "Nenhum arquivo .txt encontrado em: $dir"
 
   info "Arquivo de origem detectado"
-  detail "🎞 $(basename "$source_mkv")"
+  detail "🎞  $(basename "$source_mkv")"
   detail "💬 $(basename "$subtitle")"
   detail "📖 $(basename "$chapters")"
 
@@ -287,14 +291,14 @@ main() {
   local thumbnail="${dir}/${base_name}[${hash}].webp"
 
   spinner "Gerando thumbnail..." \
-    ffmpeg -ss 00:02:30 -i "$output_final" -vf "thumbnail=10,setsar=1" -vframes 1 "$thumbnail" -y
+    ffmpeg -ss "${THUMBNAIL_TIME}" -i "$output_final" -vf "thumbnail=10,setsar=1" -vframes 1 "$thumbnail" -y
 
   local elapsed
   elapsed=$(( SECONDS - start_time ))
 
   echo
   echo -e "${C_GREEN}${C_BOLD} ╔══════════════════════════════════════════════╗${C_RESET}"
-  echo -e "${C_GREEN}${C_BOLD} ║ ✅ Episódio gerado com sucesso! ║${C_RESET}"
+  echo -e "${C_GREEN}${C_BOLD} ║ ✅ Episódio gerado com sucesso!              ║${C_RESET}"
   echo -e "${C_GREEN}${C_BOLD} ╚══════════════════════════════════════════════╝${C_RESET}"
   echo
   detail "🎬 $(basename "$output_final")"
