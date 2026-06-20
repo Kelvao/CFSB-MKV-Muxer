@@ -6,7 +6,7 @@ set -euo pipefail
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly TAG="CFSB"
 readonly THUMB_TIMESTAMP="00:00:30"
-readonly SOURCES=("BD" "WEB" "TV" "DVD" "HDTV")
+readonly SOURCES=("BD" "WEB-RIP" "TV" "DVD" "HDTV")
 GEN_THUMB=0
 THUMB_TS=""
 
@@ -165,7 +165,7 @@ detect_resolution() {
 }
 
 count_source_tracks() {
-    mkvmerge --identify "$1" | grep -cP "^Track ID \d+: $2 "
+    mkvmerge --ui-language en_US --identify "$1" | grep -cP "^Track ID \d+: $2 " || true
 }
 
 # ─── CRC-32 calculation ────────────────────────────────────────────────────
@@ -337,9 +337,11 @@ main() {
             --priority lower \
             --output "$mkv_temp" \
             --no-subtitles \
+            --no-chapters \
             --language 1:ja-JP \
             --track-name '1:Japonês' \
             --original-flag 1:yes \
+            --audio-tracks 1 \
             '(' "$source_mkv" ')' \
             --language 0:pt-BR \
             --track-name '0:Português do Brasil' \
