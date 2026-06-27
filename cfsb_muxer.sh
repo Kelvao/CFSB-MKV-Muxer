@@ -6,7 +6,7 @@ set -euo pipefail
 readonly SCRIPT_NAME="$(basename "$0")"
 readonly TAG="CFSB"
 readonly THUMB_TIMESTAMP="00:00:30"
-readonly SOURCES=("BD" "WEB-RIP" "TV" "DVD" "HDTV")
+readonly SOURCES=("BD" "WEB-DL" "TV" "DVD" "HDTV")
 GEN_THUMB=0
 THUMB_TS=""
 
@@ -166,6 +166,60 @@ detect_resolution() {
 
 count_source_tracks() {
     mkvmerge --ui-language en_US --identify "$1" | grep -cP "^Track ID \d+: $2 " || true
+}
+
+# ─── Video duration (for JSON export) ───────────────────────────────────────
+get_video_duration_seconds() {
+    local file="$1"
+    local raw
+
+    raw=$(ffprobe -v error -show_entries format=duration \
+        -of default=noprint_wrappers=1:nokey=1 "$file")
+    printf '%.0f' "$raw"
+}
+
+format_duration() {
+    local total_seconds="$1"
+    local mins secs rem_hrs
+
+    mins=$(( total_seconds / 60 ))
+    secs=$(( total_seconds % 60 ))
+
+    (( secs > 35 )) && (( mins++ ))
+
+    if (( mins >= 60 )); then
+        rem_hrs=$(( mins % 60 ))
+        mins=$(( mins / 60 ))
+        (( rem_hrs > 35 )) && (( mins++ ))
+        echo "${mins}hr"
+    else
+        echo "${mins}m"
+    fi
+}
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+write_mux_metadata_json() {
+    local json_path="$1"
+    local anime="$2"
+    local duracao="$3"
+    local crc="$4"
+
+    cat > "$json_path" <<EOF
+{
+  "anime": "$(json_escape "$anime")",
+  "duracao": "$duracao",
+  "crc": "$crc"
+}
+EOF
 }
 
 # ─── CRC-32 calculation ────────────────────────────────────────────────────
@@ -391,6 +445,12 @@ main() {
             ffmpeg -ss "$THUMB_TS" -i "$mkv_final" -vf "thumbnail,setsar=1" -vframes 1 "$thumb" -y
     fi
 
+    local video_seconds duracao json_final
+    video_seconds=$(get_video_duration_seconds "$mkv_final")
+    duracao=$(format_duration "$video_seconds")
+    json_final="${mkv_final%.mkv}.json"
+    write_mux_metadata_json "$json_final" "$ANIME" "$duracao" "$hash"
+
     local duration=$(( SECONDS - start_time ))
     # ── Final summary ──
     echo
@@ -399,6 +459,7 @@ main() {
     echo -e "${C_GREEN}${C_BOLD}  ╚══════════════════════════════════════════════╝${C_RESET}"
     echo
     detail "🎬  $(basename "$mkv_final")"
+    detail "📄  $(basename "$json_final")"
     [[ -n "$thumb" ]] && detail "🌅  $(basename "$thumb")"
     detail "🕐  Tempo: $(( duration / 60 ))m $(( duration % 60 ))s"
     echo
